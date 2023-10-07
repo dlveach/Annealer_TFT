@@ -1,0 +1,18 @@
+TFT 2.8" Touch Screen Case Annealer
+
+Loosely based on the "MGNZ Makes annealer" project
+
+References and credits:
+  2.8" TFT Touch Screen Display.  (Elecrow 2.8)
+    https://www.elecrow.com/esp32-display-2-8-inch-hmi-display-spi-tft-lcd-touch-screen.html
+  LVGL
+    https://docs.lvgl.io/master/index.html
+  TIC 500
+    https://www.pololu.com/docs/0J71
+  MGNZ Makes annealer project
+    https://www.mgnz-makes.com
+
+
+
+TODO: Add more documentation
+
