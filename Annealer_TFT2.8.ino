@@ -95,20 +95,12 @@ void my_touchpad_read( lv_indev_drv_t * indev_driver, lv_indev_data_t * data )
 #define I2C_SDA 22
 #define I2C_SCL 21
 
-/* State machine */
-#define MANUAL 0
-#define PAUSED 1
-#define ANNEALING 2
-#define DROPPING 3
-#define COOLING 4
-#define LOADING 5
-#define HOMING 99
-
 /* Defaults */
-#define EEPROM_VERSION 100005           // Update when EEPROM data structure changes
+#define EEPROM_VERSION 100006           // Update when EEPROM data structure changes
 #define DEFAULT_ANNEAL_TIME 2500        // Default Annealing time
-#define DEFAULT_PAUSE_TIME 5000         // Default Time to pause between auto anneal cycles for cooling
-#define MAX_TEMP 150                    // Default Threshold for cool down
+#define DEFAULT_PAUSE_TIME 5000         // Default time to pause between auto anneal cycles for cooling
+#define DEFAULT_DWELL_TIME 2000         // Default time to dwell for case drop
+#define MAX_TEMP 150                    // Default threshold temp for cool down (TODO: C or F???)
 
 /* TIC stepper controller */
 #include <Tic.h>  
@@ -128,6 +120,27 @@ TicI2C stepper(0x0E);
 unsigned long tic_ping = 0;
 int motor_speed = TIC_MAX_SPEED;
 int motor_current = TIC_CURRENT_LIMIT;
+//Feeder state machine
+#define FEEDER_PAUSED 0
+#define FEEDER_DROP_DWELL 1
+#define FEEDER_DROPPING 2
+#define FEEDER_LOADING 3
+#define FEEDER_HOMING  99
+int feeder_mode = FEEDER_PAUSED;
+//Feeder Homing states
+#define FEEDER_NOT_HOMED 0
+#define FEEDER_HOMING_STEP_1 1
+#define FEEDER_HOMED 3
+int feeder_homed = FEEDER_NOT_HOMED;
+
+/* System state machine */
+#define SYS_MANUAL 0
+#define SYS_PAUSED 1
+#define SYS_FEED_CASE 2
+#define SYS_ANNEALING 3
+#define SYS_CASE_DROP 4
+#define SYS_COOLING 10
+#define SYS_HOMING 99
 
 /* Program Globals */
 int anneal_time = DEFAULT_ANNEAL_TIME;  
@@ -136,12 +149,16 @@ unsigned long previous_anneal = 0;
 int pause_time = DEFAULT_PAUSE_TIME;                  
 unsigned long previous_pause = 0;
 
+int dwell_time = DEFAULT_DWELL_TIME;
+unsigned long previous_dwell = 0;
+
 int data_refresh_interval = 500;
 unsigned long last_data_refresh = 0;
 
 int state = MANUAL;
 int last_state = -1;
 bool run_once = false;
+bool running = false;
 
 bool auto_cycle_enabled = false;
 int cycle_count = 0;  
@@ -228,7 +245,7 @@ void setup()
   }
 
   if (Serial && DEBUG) Serial.println( "Homing ..." );
-  homeDropper();
+  homeFeeder();
 
   if (Serial && DEBUG) Serial.println( "Setup done" );
 }
@@ -268,143 +285,147 @@ void loop()
   //END TESTING /////////////////////////
 
   readTemp();
-
   readAmps();
 
-  // Annealing cycle state machine
-  if (auto_cycle_enabled || run_once)
+  // System state machine
+  switch (state)
   {
-    if (state == PAUSED || state == MANUAL) 
-    {
-      if ((unsigned long)(now - previous_pause) > pause_time) 
+    case SYS_HOMING:
+      //TODO: Handled by stepper state maching?
+      break;
+    case SYS_PAUSED:
+    case SYS_MANUAL:
+      if (auto_cycle_enabled || run_once)
       {
-        //TODO: start an anneal cycle
-        startAnnealing();
-        state = ANNEALING;
-        previous_anneal = now;
-      }
-      else if (state == MANUAL)
-      {
-        state = PAUSED;
-      }
-    }
-    else if (state == ANNEALING) 
-    {
-      if ((unsigned long)(now - previous_anneal) > anneal_time) 
-      {
-        //TODO: Finish annealing
-        finishAnnealing();
-        cycle_count += 1;
-        if (run_once)
+        if (!(running) && now - previous_pause > pause_time) 
         {
-          state = MANUAL;
-          run_once = false;
+          if (feeder_mode = FEEDER_PAUSED)
+          {
+            startStepper();
+            running = true;
+            state = SYS_FEED_CASE;
+          }         
         }
-        else
-        {
-          state = PAUSED;
-        }
-        previous_pause = now;
       }
-    }
-  }
-  else
-  {
-    if (state == ANNEALING)
-    {
-      if ((unsigned long)(now - previous_anneal) > anneal_time) 
+      break;
+    case SYS_FEED_CASE:
+      if (feeder_mode == FEEDER_LOADING)  //case has been fed by stepper
       {
-        //TODO: Finish annealing
-        finishAnnealing();
-        cycle_count += 1;
-        state = MANUAL;
-        previous_pause = now;
+        //TODO: enable annealer relay
+        anneal_start_time = now;
+        state = SYS_ANNEALING;
       }
-    }
-    else
-    {
-      state = MANUAL;
-      previous_pause = now;
-    }
+      break;
+    case SYS_ANNEALING:
+      if (now - anneal_start_time > anneal_time)
+      {
+        if (Serial && DEBUG) Serial.println("End annealing, start case drop");
+        //TODO: stop annealing
+        //TODO: activate drop solenoid relay
+        drop_start_time = now;
+        state = SYS_CASE_DROP;
+      }
+      break;
+    case SYS_CASE_DROP:
+      if (now - drop_start_time > drop_time)
+      {
+        if (Serial && DEBUG) Serial.println("End case drop");
+        //TODO: deactivate drop solenoid relay
+        //TODO: any state change?
+      }
+    case SYS_COOLING:
+        //TODO: handle cooling cycle
+      break;
+    default:
+      if (Serial) Serial.print("ERROR: loop() unhandled state: "); Serial.println(state);
+      break;
   }
 
-  // Process stepper control
-  checkStepper();
-
-  // Refresh UI data
-  refreshUI(now);
+  checkStepper();   // Process stepper control
+  refreshUI(now);   // Refresh UI data
 }
 
-/* TODO: document */
-void startAnnealing()
-{
-  if (Serial && DEBUG) Serial.println("startAnnealing()");
-  if (stepper.getOperationState() != TicOperationState::Normal) stepper.exitSafeStart();
-  if (!(stepper.getEnergized())) stepper.energize();
-  //TESTING
-  if (stepper.getOperationState() == TicOperationState::Normal) 
+// UNUSED?
+  /* TODO: document */
+  void startCycle()
   {
-    if (Serial && DEBUG)
-    {
-      Serial.println("TIC operational state: NORMAL");
-      Serial.println("move stepper to drop case position");
-    }
-    stepper.setTargetVelocity(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
-    while (stepper.getCurrentVelocity() == 0);  //Wait for movement
-    int c = 0;
-    while (!(isAtDropLocation()))   //TODO: move to main loop check
-    {
-      delay(1);
-      if (++c == 50)
-      {
-        stepper.resetCommandTimeout();
-        c = 0;
-      }
-    }
-    Serial.print("Stepper drop position hit: ");
-    Serial.println(stepper.getCurrentPosition());
-    stepper.haltAndSetPosition(0); //resets home position 
-  }
-  else 
-  { 
-    if (Serial && DEBUG)
-    {
-      Serial.print("ERROR: TIC Operational state: ");
-      Serial.println((unsigned int)stepper.getOperationState());
-    }
-  }
-  //END TESTING
-}
 
-/* TODO: document */
-void finishAnnealing()
-{
-  if (Serial && DEBUG) Serial.println("finishAnnealing()");
-  if (stepper.getOperationState() != TicOperationState::Normal) stepper.exitSafeStart();
-  if (stepper.getOperationState() == TicOperationState::Normal) 
-  {
-    if (Serial && DEBUG)
-    {
-      Serial.println("TIC operational state: NORMAL");
-      Serial.println("move stepper to load case and pause position");
-    }
-    stepper.setTargetVelocity(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
-    while (stepper.getCurrentVelocity() == 0);  //Wait for movement
-    int c = 0;
-    while (!(isAtPauseLocation()))  //TODO: move to main loop check
-    {
-      delay(1);
-      if (++c == 50)
-      {
-        stepper.resetCommandTimeout();
-        c = 0;
-      }
-    }
-    stepper.haltAndHold();
-    Serial.print("Stepper at hold position : ");
-    Serial.println(stepper.getCurrentPosition());
-  }        
-}
+  }
+//
+
+// OLD stuff to remove
+  /* TODO: document */
+  // void startAnnealing()   //TODO: refactor for feeder_mode state machine
+  // {
+  //   if (Serial && DEBUG) Serial.println("TODO: startAnnealing()");
+    // if (stepper.getOperationState() != TicOperationState::Normal) stepper.exitSafeStart();
+    // if (!(stepper.getEnergized())) stepper.energize();
+    // //TESTING
+    // if (stepper.getOperationState() == TicOperationState::Normal) 
+    // {
+    //   if (Serial && DEBUG)
+    //   {
+    //     Serial.println("TIC operational state: NORMAL");
+    //     Serial.println("move stepper to drop case position");
+    //   }
+    //   start_stepper();
+    //   // stepper.setTargetVelocity(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
+    //   // while (stepper.getCurrentVelocity() == 0);  //Wait for movement
+    //   int c = 0;
+    //   while (!(isAtDropLocation()))   //TODO: move to main loop check
+    //   {
+    //     delay(1);
+    //     if (++c == 50)
+    //     {
+    //       stepper.resetCommandTimeout();
+    //       c = 0;
+    //     }
+    //   }
+    //   Serial.print("Stepper drop position hit: ");
+    //   Serial.println(stepper.getCurrentPosition());
+    //   stepper.haltAndSetPosition(0); //resets home position 
+    // }
+    // else 
+    // { 
+    //   if (Serial && DEBUG)
+    //   {
+    //     Serial.print("ERROR: TIC Operational state: ");
+    //     Serial.println((unsigned int)stepper.getOperationState());
+    //   }
+    // }
+    // //END TESTING
+  // }
+
+  /* TODO: document */
+  // void finishAnnealing()   //TODO: refactor for feeder_mode state machine
+  // {
+  //   if (Serial && DEBUG) Serial.println("TODO: finishAnnealing()");
+    // if (stepper.getOperationState() != TicOperationState::Normal) stepper.exitSafeStart();
+    // if (stepper.getOperationState() == TicOperationState::Normal) 
+    // {
+    //   if (Serial && DEBUG)
+    //   {
+    //     Serial.println("TIC operational state: NORMAL");
+    //     Serial.println("move stepper to load case and pause position");
+    //   }
+    //   stepper.setTargetVelocity(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
+    //   while (stepper.getCurrentVelocity() == 0);  //Wait for movement
+    //   int c = 0;
+    //   while (!(isAtPauseLocation()))  //TODO: move to main loop check
+    //   {
+    //     delay(1);
+    //     if (++c == 50)
+    //     {
+    //       stepper.resetCommandTimeout();
+    //       c = 0;
+    //     }
+    //   }
+    //   stepper.haltAndHold();
+    //   Serial.print("Stepper at hold position : ");
+    //   Serial.println(stepper.getCurrentPosition());
+    // }        
+  // }
+//
 
 /* Refresh UI */
 void refreshUI(unsigned long now)
@@ -551,6 +572,7 @@ typedef struct storeData_t
   int version;
   int anneal_time;
   int pause_time;
+  int dwell_time;
   int motor_speed;
   int motor_current;
   int max_temp;
@@ -580,6 +602,7 @@ void readStorage()
   {
     anneal_time = prefs.storeData.anneal_time;
     pause_time = prefs.storeData.pause_time;
+    dwell_time = prefs.storeData.dwell_time;
     motor_speed = prefs.storeData.motor_speed;
     motor_current = prefs.storeData.motor_current;
     max_temp = prefs.storeData.max_temp;
@@ -590,6 +613,8 @@ void readStorage()
       Serial.println(anneal_time);
       Serial.print("   pause_time: ");
       Serial.println(pause_time);
+      Serial.print(".  dwell_time: ");
+      Serial.println(dwell_time);
       Serial.print("   motor_speed: ");
       Serial.println(motor_speed);
       Serial.print("   motor_current: ");
@@ -616,6 +641,7 @@ void writeStorage()
   prefs.storeData.version = EEPROM_VERSION;
   prefs.storeData.anneal_time = anneal_time;
   prefs.storeData.pause_time = pause_time;
+  prefs.storeData.dwell_time = dwell_time;
   prefs.storeData.motor_speed = motor_speed;
   prefs.storeData.motor_current = motor_current;
   prefs.storeData.max_temp = max_temp;
@@ -626,43 +652,14 @@ void writeStorage()
   if (Serial && DEBUG) Serial.println("Sys data written to EEPROM stored preferences.");
 }
 
-/* Home the case droper.
-    Currently a test simulation, just positions the dropper at the pause position.
-    Assumes at startup has been manually located to the drop position.
-
-    Later this will utilize magnets to locate the home position.
- */
-void homeDropper()
+/* Start homing the case feeder. */
+void homeFeeder()
 {
-  if (Serial) Serial.println("TODO: homeDropper()");
-  if (stepper.getOperationState() != TicOperationState::Normal) stepper.exitSafeStart();
-  if (!(stepper.getEnergized())) stepper.energize();
-  if (Serial && DEBUG) Serial.println("TODO: move stepper to detect magnet in home position");
-  delay(50);
-  Serial.println("TEST Set current stepper position to zero");
-  stepper.haltAndSetPosition(0); 
-  delay(50);
-  Serial.print("TEST Current stepper zero position: ");
-  Serial.println(stepper.getCurrentPosition());
-  delay(50);
-  Serial.println("TEST Set current stepper position to pause location");
-  stepper.setTargetVelocity(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
-  while (stepper.getCurrentVelocity() == 0);  //Wait for movement
-  int c = 0;
-  while (!(isAtPauseLocation()))
-  {
-    // Ping TIC command timeout every 50ms until at pause position.
-    delay(1);
-    if (++c == 50)
-    {
-      stepper.resetCommandTimeout();
-      c = 0;
-    }
-  }
-  stepper.haltAndHold();
-  Serial.println("TEST Homing stopped");
-  Serial.print("TEST Current stepper position: ");
-  Serial.println(stepper.getCurrentPosition());
+  if (Serial) Serial.println("homeFeeder()");
+  feeder_mode = FEEDER_HOMING:
+  feeder_homed = FEEDER_NOT_HOMED;
+  start_stepper();
+  state = SYS_HOMING;
 }
 
 /* TODO: document */
@@ -687,71 +684,96 @@ void readAmps()
   }
 }
 
-/*  Later this will utilize magnets to locate the position. */
+/*  TODO: Utilize magnets to locate the position. */
 bool isAtPauseLocation()
 {
   if (stepper.getCurrentPosition() >= PAUSE_POSITION) return true;
   else return false;
 }
 
-/*  Later this will utilize magnets to locate the position. */
+/*  TODO: Utilize magnets to locate the position. */
 bool isAtDropLocation()
 {
   if (stepper.getCurrentPosition() >= DROP_POSITION) return true;
   else return false;
 }
 
-#define PAUSED 0
-#define DROP_DWELL 1
-#define DROPPING 2
-#define LOADING 3
-int stepper_mode = PAUSED;
-
-/* TODO: document 
+/* Manage stepper movement.  TODO: document 
     Expected to be called from main loop on every cycle.
-    Manage stepper movement.
 */
 void checkStepper()
 {
   unsigned long now = millis();
-
-  // ping TIC command timeout watchdog
-  if (now - tic_ping > TIC_PING_INTERVAL)
+  if (now - tic_ping > TIC_PING_INTERVAL)   // ping TIC command timeout watchdog
   {
     stepper.resetCommandTimeout();
     tic_ping = now;
   }
-
-  switch (stepper_mode)
+  switch (feeder_mode)
   {
-    case PAUSED:
-      //TODO: anything?  Just wait for next cycle?
+    case FEEDER_HOMING:
+      switch (feeder_homed)
+      {
+        case FEEDER_NOT_HOMED:
+          if (isAtDropLocation()) feeder_homed = FEEDER_HOMING_STEP_1;
+          break;
+        case FEEDER_HOMING_STEP_1:
+          if (isAtPauseLocation()) 
+          {
+            stop_stepper(true);
+            Seria0l.print("Stepper at pause position: ");
+            Serial.println(stepper.getCurrentPosition());
+            feeder_homed = FEEDER_HOMED;
+            feeder_mode = FEEDER_PAUSED;
+          }
+          break;
+        case FEEDER_HOMED:
+          //do nothing
+          break;
+        default:
+          if (Serial) Serial.print("ERROR: checkStepper(): unhandled feeder_homed value: "); Serial.println(feeder_homed);
+          break;
+      }
       break;
-    case DROP_DWELL:
-      //TODO: implement dwell for drop
+    case FEEDER_PAUSED:
+      //TODO: anything?  Just waiting for next cycle start?
       break;
-    case DROPPING:
+    case FEEDER_DROP_DWELL:
+      //TODO: implement dwell for drop, handled in main state machine?
+      if (now - previous_dwell > dwell_time)
+      {
+        Serial.pr0intln("Drop Dwell ended.  Start Loading.");
+        start_stepper();
+        feeder_mode = FEEDER_LOADING;
+      }
+      break;
+    case FEEDER_DROPPING:
       if (isAtDropLocation()) 
       {
         Serial.print("Stepper at drop position: ");
         Serial.println(stepper.getCurrentPosition());
-        stepper.haltAndSetPosition(0); //resets home position 
+        stop_stepper(true);
+        // stepper.haltAndSetPosition(0); //resets home position 
+        Serial.println("Starting Drop Dwell.");
+        previous_dwell = now;
+        feeder_mode = FEEDER_DROP_DWELL;
       }
       break;
-    case LOADING:
+    case FEEDER_LOADING:
       if (isAtPauseLocation())
       {
-        stepper.haltAndHold();
+        stop_stepper(false);
+        // stepper.haltAndHold();
         Serial.print("Stepper at pause position: ");
         Serial.println(stepper.getCurrentPosition());
+        Serial.println("Paused for next cycle.");
+        feeder_mode = FEEDER_PAUSED;
       }
       break;
     default:
       if (Serial && DEBUG) Serial.println("ERROR: Unknown steper mode")
       break;
   }
-
-
 
   //TESTING
   if (now - last_test_tic > 5000)
@@ -765,5 +787,25 @@ void checkStepper()
       Serial.print("Stepper Operational State: ");
       Serial.println((unsigned int)stepper.getOperationState());
     }
+  }
+}
+
+void startStepper()
+{
+  if (stepper.getOperationState() != TicOperationState::Normal) stepper.exitSafeStart();
+  if (!(stepper.getEnergized())) stepper.energize();
+  stepper.setTargetVelocity(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
+  while (stepper.getCurrentVelocity() == 0);  //Wait for movement         TODO: ----------> HANG point?
+}
+
+void stopStepper(bool setZero)
+{
+  if (setZero)
+  {
+    stepper.haltAndSetPosition(0); //resets home position 
+  }
+  else
+  {
+    stepper.haltAndHold();
   }
 }
