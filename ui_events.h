@@ -10,12 +10,20 @@
 extern "C" {
 #endif
 
-void annealTimeSliderChangedFn(lv_event_t * e);
 void autoBtnFn(lv_event_t * e);
 void manualBtnFn(lv_event_t * e);
 void SliderAnnealTimeChangedFn(lv_event_t * e);
 void SliderPauseTimeChangedFn(lv_event_t * e);
 void resetBtnFn(lv_event_t * e);
+void BtnSettingsFn(lv_event_t * e);
+void BtnSettingsCancelFn(lv_event_t * e);
+void BtnSettingsSaveFn(lv_event_t * e);
+void SliderFeederDwellTimeFn(lv_event_t * e);
+void SliderDropTimeFn(lv_event_t * e);
+void SliderMotorSpeedFn(lv_event_t * e);
+void SliderMotorCurrentFn(lv_event_t * e);
+void SliderMaxTempFn(lv_event_t * e);
+void SliderMinTempFn(lv_event_t * e);
 
 #ifdef __cplusplus
 } /*extern "C"*/

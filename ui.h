@@ -16,14 +16,22 @@ extern "C" {
 #include "ui_comp.h"
 #include "ui_comp_hook.h"
 #include "ui_events.h"
-// SCREEN: ui_mainscreen
-void ui_mainscreen_screen_init(void);
-extern lv_obj_t *ui_mainscreen;
+// SCREEN: ui_SplashScreen
+void ui_SplashScreen_screen_init(void);
+extern lv_obj_t *ui_SplashScreen;
+extern lv_obj_t *ui_Logo;
+extern lv_obj_t *ui_SplashVersion;
+extern lv_obj_t *ui_SplashTitle;
+extern lv_obj_t *ui_Spinner;
+// SCREEN: ui_MainScreen
+void ui_MainScreen_screen_init(void);
+extern lv_obj_t *ui_MainScreen;
 void ui_event_BtnAuto( lv_event_t * e);
 extern lv_obj_t *ui_BtnAuto;
 extern lv_obj_t *ui_BtnAutoLabel;
 extern lv_obj_t *ui_Temp;
 extern lv_obj_t *ui_TempLabel;
+extern lv_obj_t *ui_TempFCLabel;
 extern lv_obj_t *ui_Amps;
 extern lv_obj_t *ui_AmpsLabel;
 void ui_event_BtnManual( lv_event_t * e);
@@ -41,7 +49,48 @@ extern lv_obj_t *ui_CountLabel;
 void ui_event_BtnReset( lv_event_t * e);
 extern lv_obj_t *ui_BtnReset;
 extern lv_obj_t *ui_BtnResetLabel;
+void ui_event_BtnSettings( lv_event_t * e);
+extern lv_obj_t *ui_BtnSettings;
+extern lv_obj_t *ui_BtnSettingsLabel;
+extern lv_obj_t *ui_AnnealTimeLabel;
+extern lv_obj_t *ui_PauseTimeLabel;
+// SCREEN: ui_SettingsScreen
+void ui_SettingsScreen_screen_init(void);
+extern lv_obj_t *ui_SettingsScreen;
+void ui_event_BtnSettingsCancel( lv_event_t * e);
+extern lv_obj_t *ui_BtnSettingsCancel;
+extern lv_obj_t *ui_BtnSettingsCancelLabel;
+void ui_event_BtnSettingsSave( lv_event_t * e);
+extern lv_obj_t *ui_BtnSettingsSave;
+extern lv_obj_t *ui_BtnSettingsSaveLabel;
+void ui_event_SliderFeederDwellTime( lv_event_t * e);
+extern lv_obj_t *ui_SliderFeederDwellTime;
+extern lv_obj_t *ui_FeederDwellTime;
+extern lv_obj_t *ui_FeederDwellTimeLabel;
+void ui_event_SliderDropDwellTime( lv_event_t * e);
+extern lv_obj_t *ui_SliderDropDwellTime;
+extern lv_obj_t *ui_DropDwellTime;
+extern lv_obj_t *ui_DropDwellTimeLabel;
+void ui_event_SliderMotorSpeed( lv_event_t * e);
+extern lv_obj_t *ui_SliderMotorSpeed;
+extern lv_obj_t *ui_MotorSpeed;
+extern lv_obj_t *ui_MotorSpeedLabel;
+void ui_event_SliderMotorCurent( lv_event_t * e);
+extern lv_obj_t *ui_SliderMotorCurrent;
+extern lv_obj_t *ui_MotorCurrent;
+extern lv_obj_t *ui_MotorCurrentLabel;
+void ui_event_SliderMaxTemp( lv_event_t * e);
+extern lv_obj_t *ui_SliderMaxTemp;
+extern lv_obj_t *ui_MaxTemp;
+extern lv_obj_t *ui_MaxTempLabel;
+void ui_event_SliderMinTemp( lv_event_t * e);
+extern lv_obj_t *ui_SliderMinTemp;
+extern lv_obj_t *ui_MinTemp;
+extern lv_obj_t *ui_MinTempLabel;
 extern lv_obj_t *ui____initial_actions0;
+
+LV_IMG_DECLARE( ui_img_stallionarms_240x99_png);   // assets/StallionArms_240x99.png
+LV_IMG_DECLARE( ui_img_1945259780);   // assets/setting-gear_30x30.png
 
 // My main project hooks
 void handlePauseSliderEvent(lv_event_t * e);
@@ -49,6 +98,15 @@ void handleAnnealSliderEvent(lv_event_t * e);
 void handleAutoBtnEvent(lv_event_t * e);
 void handleManualBtnEvent(lv_event_t * e);
 void handleResetBtnEvent(lv_event_t * e);
+void handleSettingsBtnEvent(lv_event_t * e);
+void handleBtnSettingsCancelEvent(lv_event_t * e);
+void handleBtnSettingsSaveEvent(lv_event_t * e);
+void handleSliderFeederDwellTimeEvent(lv_event_t * e);
+void handleSliderDropOffsetEvent(lv_event_t * e);
+void handleSliderMotorSpeedEvent(lv_event_t * e);
+void handleSliderMotorCurrentEvent(lv_event_t * e);
+void handleSliderMaxTempEvent(lv_event_t * e);
+void handleSliderMinTempEvent(lv_event_t * e);
 
 void ui_init(void);
 

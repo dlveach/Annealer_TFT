@@ -5,32 +5,18 @@
 
 #include "ui.h"
 
-void annealTimeSliderChangedFn(lv_event_t * e)
-{
-	handleAnnealSliderEvent(e);
-}
+void autoBtnFn(lv_event_t * e) { handleAutoBtnEvent(e); }
+void manualBtnFn(lv_event_t * e) { handleManualBtnEvent(e); }
+void SliderAnnealTimeChangedFn(lv_event_t * e) { handleAnnealSliderEvent(e); }
+void SliderPauseTimeChangedFn(lv_event_t * e) { handlePauseSliderEvent(e); }
+void resetBtnFn(lv_event_t * e) { handleResetBtnEvent(e); }
+void BtnSettingsFn(lv_event_t * e) { handleSettingsBtnEvent(e); }
+void BtnSettingsCancelFn(lv_event_t * e) { handleBtnSettingsCancelEvent(e); }
+void BtnSettingsSaveFn(lv_event_t * e) { handleBtnSettingsSaveEvent(e); }
+void SliderFeederDwellTimeFn(lv_event_t * e) { handleSliderFeederDwellTimeEvent(e); }
+void SliderDropTimeFn(lv_event_t * e) { handleSliderDropOffsetEvent(e); }
+void SliderMotorSpeedFn(lv_event_t * e) { handleSliderMotorSpeedEvent(e); }
+void SliderMotorCurrentFn(lv_event_t * e) { handleSliderMotorCurrentEvent(e); }
+void SliderMaxTempFn(lv_event_t * e) { handleSliderMaxTempEvent(e); }
+void SliderMinTempFn(lv_event_t * e) { handleSliderMinTempEvent(e); }
 
-void autoBtnFn(lv_event_t * e)
-{
-	handleAutoBtnEvent(e);
-}
-
-void manualBtnFn(lv_event_t * e)
-{
-	handleManualBtnEvent(e);
-}
-
-void SliderAnnealTimeChangedFn(lv_event_t * e)
-{
-  handleAnnealSliderEvent(e);
-}
-
-void SliderPauseTimeChangedFn(lv_event_t * e)
-{
-  handlePauseSliderEvent(e);
-}
-
-void resetBtnFn(lv_event_t * e)
-{
-	handleResetBtnEvent(e);
-}

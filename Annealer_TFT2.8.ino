@@ -10,21 +10,32 @@ References and credits:
     https://www.pololu.com/docs/0J71
   MGNZ Makes annealer project
     https://www.mgnz-makes.com
-  Comimark PCF8574T I2C GPIO expander         -------> TODO: switch to a MCP23017
-    https://www.amazon.com/dp/B07X3KWQZ7
+  XICOOLEE MCP23017 I/O Expansion Board Module
+    https://www.amazon.com/dp/B0BTRMT7NP
+    https://seengreat.com/product/1396/sg-io-e017
+
 
 I2C Addresses:
   0x0E: Pololu TIC 500
-  0x20: Comimark GPIO expander
+  0x27: XICOOLEE MCP23017 I/O Expander
   0x48: Elecrow Crowtail Temperature sensor TMP102
 
+NOTE:
+Arduino IDE Tools settings for Elecrow 3.5" touch screen:
+  Board: ESP32 Dev Module
+  Upload speed: Max 460800
+  Partition scheme: Huge APP (3mb No OTA/1MB SPIFFS)
+  Flash mode: QIO
+  Flash size: 4MB (32Mb)
+
+
 TODO:
-  - MVP: relay controls for drop solenoid and ZVM annealer
-  - MVP: temperature sensor stuff
-  - MVP: magnet sensor triggers for feeder home & drop locations
-  - Settings UI page (configure stored TIC stepper detialed settings, dwell times, etc.)
-  - Count up time in display during anneal
-  - Count down time in display during pause
+  - MVP: Temperature sensor cooling mode limit check.
+  - MVP: Read amps.
+
+IDEAS:
+  - Maybe Count up time in display during anneal
+  - Maybe Count down time in display during pause
   - Maybe add a new button for clear homed (don't use reset)?
   
 ******************************************************************************/
@@ -55,9 +66,14 @@ static const uint16_t screenHeight = 240;
 uint16_t calData[5] = { 557, 3263, 369, 3493, 3  };
 
 #elif defined Display_28    // ESP32 Display 2.8inch Board
-static const uint16_t screenWidth  = 320;
-static const uint16_t screenHeight = 240;
-uint16_t calData[5] = { 189, 3416, 359, 3439, 1 };
+// static const uint16_t screenWidth  = 320;
+// static const uint16_t screenHeight = 240;
+// uint16_t calData[5] = { 189, 3416, 359, 3439, 1 };
+
+static const uint16_t screenWidth  = 240;   //swap dimensions for portrait mode
+static const uint16_t screenHeight = 320;
+//TODO: portrait calibration data
+uint16_t calData[5] = { 321, 3507, 183, 3520, 4 };
 #endif
 
 /* TFT entity */
@@ -106,40 +122,63 @@ void my_touchpad_read( lv_indev_drv_t * indev_driver, lv_indev_data_t * data )
 #define I2C_SDA 22
 #define I2C_SCL 21
 
-/* PCF I2C port expander */
-#include <pcf8574.h>
-PCF8574 *ex;
-
 /* TMP102 Temperature Sensor */
 #include <SparkFunTMP102.h>
 TMP102 tmp;
 
+/* MCP23017 I/O expander  */
+#include <Adafruit_MCP23X17.h>
+Adafruit_MCP23X17 mcp;
+#define MCP_DROP_RELAY_PIN  3           // MCP expander pin for 12v drop relay (output)
+#define MCP_ANNEAL_SSR_PIN  15          // MCP expander pin for 48v Annealer SSR (output)
+#define MCP_HALL_SENSOR_PIN 9           // MCP expander pin for Hall Effect sensor data line (input)
+
 /* Defaults */
-#define EEPROM_VERSION 100008           // Update when EEPROM data structure defaults changes
+#define EEPROM_VERSION 100005           // Update when EEPROM data structure defaults changes
+#define SPLASH_DELAY 5000               // Time to display splash screen
+#define SW_VERSION "alpha_0.1.0"        // Version string
 #define DEFAULT_ANNEAL_TIME 2500        // Default Annealing time
-#define DEFAULT_PAUSE_TIME 5000         // Default time to pause between auto anneal cycles for cooling
-#define DEFAULT_FEEDER_DWELL_TIME 1000  // Default time to dwell for case feed
-#define DEFAULT_DROP_DWELL_TIME 1000    // Default time to dwell for case drop
-//#define MAX_TEMP 150                    // Default threshold temp for cool down (TODO: C or F???)
-// #define TEMP_HIGH_THRESHOLD 150.0       // Default threshold temp for cool down (Deg F)
-#define TEMP_HIGH_THRESHOLD 78.0       // TESTING
-// #define TEMP_LOW_THRESHOLD 140.0        // Default threshold temp for cool down (Deg F)
-#define TEMP_LOW_THRESHOLD 76.0        // TESTING
+#define DEFAULT_PAUSE_TIME 3000         // Default time to pause between auto anneal cycles for cooling
+#define DEFAULT_FEEDER_DWELL_TIME 1000  // Default time to dwell for case feed/drop.
+#define TEMP_HIGH_THRESHOLD 150         // Default threshold temp for enter cool down (Deg F)
+#define TEMP_LOW_THRESHOLD 140          // Default threshold temp for exit cool down (Deg F)
+#define DEFAULT_DROP_POS_OFFSET 0       // Default offset from hall sensor trigger for drop position
+
+/* EEPROM stored preferences */
+typedef struct storeData_t
+{
+  int version;
+  int anneal_time;
+  int pause_time;
+  int feeder_dwell_time;
+  int drop_pos_offset;
+  int motor_speed;
+  int motor_current;
+  int temp_high_threshold;
+  int temp_low_threshold;
+};
+#define STORED_DATA_SIZE sizeof(storeData_t)
+// Data buffer for EEPROM read/write
+typedef union eeprom_buffer_t{
+ storeData_t storeData;
+ byte bufferData[sizeof(storeData_t)];
+};
+eeprom_buffer_t prefs;
+#define EEPROM_BASE 0
 
 /* TIC stepper controller */
 #include <Tic.h>  
 #define TIC_STEP_MODE TicStepMode::Microstep8  //TIC microstep mode.  WARNING: Many things need adjusting if changed
 #define TIC_CURRENT_LIMIT 1100          //TIC current limit in milliamps (see TIC docs)
 #define TIC_MAX_ACCEL 200000            //steps per second per second
-#define TIC_MAX_DECEL 200000            //steps per second per second
-#define TIC_DIRECTION 1                 //positive (1) for forward, negative (-1) for reverse
+#define TIC_MAX_DECEL 1000000           //steps per second per second, affects wheel stop position.
 #define TIC_STARTING_SPEED 100          //pulses per sec (1/8 micro step, use multiplier0)
 #define TIC_MAX_SPEED 300               //pulses per sec (1/8 micro step, use multiplier)
 #define TIC_PULSE_MULTIPLIER 10000      // TIC uses pulses/10,000 Seconds for speed. See TIC documentation.
 #define TIC_PING_INTERVAL 100           // TIC command timeout ping interval
 #define TIC_PULSES_PER_REV  200 * 8     // 200 step/rev * 8 (microstepping mode)
-#define PAUSE_POSITION 1200
-#define DROP_POSITION 1600              
+#define PAUSE_POSITION 1200             // Distance (steps) to travel to pause position.
+#define START_STOP_TIMEOUT 2000         // Timeout (milliseconds) to allow stepper to start moving or stop moving.  Note: keep in mind TIC_MAX_DECEL
 TicI2C stepper(0x0E);
 unsigned long tic_ping = 0;
 int motor_speed = TIC_MAX_SPEED;
@@ -186,8 +225,6 @@ unsigned long pause_start_time = 0;
 
 int feeder_dwell_time = DEFAULT_FEEDER_DWELL_TIME;
 unsigned long feeder_dwell_start_time = 0;
-
-int drop_dwell_time = DEFAULT_DROP_DWELL_TIME;
 unsigned long drop_dwell_start_time = 0;
 
 int data_refresh_interval = 500;
@@ -198,11 +235,17 @@ unsigned long last_temp_poll = 0;
 float sys_temp_F = 0.0;
 // float tempC = 0.0;   //TODO: option for deg C
 bool sys_alert_temp = false;
-float temp_high_threshold = TEMP_HIGH_THRESHOLD;
-float temp_low_threshold = TEMP_LOW_THRESHOLD;
+int temp_high_threshold = TEMP_HIGH_THRESHOLD;
+int temp_low_threshold = TEMP_LOW_THRESHOLD;
 
 int cycle_count = 0;  
 int last_cycle_count = cycle_count;  //TODO: is this really needed?  Used in display update.
+
+int splash_delay = SPLASH_DELAY;
+unsigned long splash_time = 0;
+bool show_splash = true;
+
+int drop_pos_offset = DEFAULT_DROP_POS_OFFSET;
 
 int sys_amps = 0;  //--------------------------> TODO: make float!!!
 
@@ -219,13 +262,25 @@ void setup()
   Wire.begin();
 
   //Port_D
-  pinMode(25, OUTPUT);
+  pinMode(25, OUTPUT);    //TODO: ADC for current detection?
   digitalWrite(25, LOW);
 
   if (Serial && DEBUG) Serial.println( "LCD Init ..." );
   //LCD init
   lcd.begin();          
-  lcd.setRotation(1); 
+  // lcd.setRotation(1);  
+  lcd.setRotation(2);     // 0: portrait USB bottom, 1: landscape USB right, 2: portrait USB top, 3: landscape USB left
+
+  // Calibrate the touch screen and retrieve the scaling factors
+  /* USE DURING DEVELOPMENT ONLY
+  Serial.println("Running touch_calibrate()");
+  //background light pin
+  pinMode(27, OUTPUT);
+  digitalWrite(27, HIGH);
+  touch_calibrate();
+  Serial.println("End setup()");
+  */
+
   lcd.fillScreen(TFT_BLACK);
   lcd.setTouch(calData);
   delay(100);
@@ -260,10 +315,17 @@ void setup()
   if (Serial && DEBUG) Serial.println( "Storage Init ..." );
   readStorage();
 
-  //PCF8574 I2C port expander init   --------------> TODO: switch to a MCP23017 module that actually can drive an output!
-  ex = new PCF8574(Wire, 0x20);
-  delay(100);
-  pinMode(*ex, 0, OUTPUT);
+  // MCP23017 init
+  if (!mcp.begin_I2C(0x27, &Wire)) {
+    Serial.println("ERROR: cannot connect to MCP23017");
+    while (1);
+  }
+  Serial.println("Connected to MCP23017");  
+  mcp.pinMode(MCP_DROP_RELAY_PIN, OUTPUT);
+  mcp.digitalWrite(MCP_DROP_RELAY_PIN, LOW);
+  mcp.pinMode(MCP_ANNEAL_SSR_PIN, OUTPUT);
+  mcp.digitalWrite(MCP_ANNEAL_SSR_PIN, LOW);
+  mcp.pinMode(MCP_HALL_SENSOR_PIN, INPUT_PULLUP);
 
   //TMP102 Temp Sensor init
   if (!(tmp.begin(0x48, Wire)))
@@ -312,8 +374,6 @@ void setup()
     stepper.setCurrentLimit(motor_current);  
     stepper.setMaxAccel(TIC_MAX_ACCEL);
     stepper.setMaxDecel(TIC_MAX_DECEL);
-    //  stepper.setMaxSpeed(motor_speed * TIC_PULSE_MULTIPLIER);
-    stepper.setMaxSpeed(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
     stepper.setStartingSpeed(TIC_STARTING_SPEED * TIC_PULSE_MULTIPLIER);
     stepper.setTargetVelocity(0);
     stepper.exitSafeStart();
@@ -334,44 +394,90 @@ void setup()
   else state = SYS_ERROR;
 
   if (Serial && DEBUG) Serial.println( "Setup done" );
+  lv_label_set_text(ui_SplashVersion, SW_VERSION);  
+  show_splash = true;
+  splash_time = millis();
 }
 
-/* Main Loop */
-bool test_motor_run = false; //TESTING
-unsigned long last_test_tic = 0; //TESTING
+// Code to run a touch calibration, not needed when calibration values set in setup()
+/* USE ONLY DURING DEVELOPMENT 
+  void touch_calibrate()
+  {
+    uint16_t calData[5];
+    uint8_t calDataOK = 0;
 
+    // Calibrate
+    lcd.fillScreen(TFT_GREEN);
+    lcd.setCursor(20, 0);
+    lcd.setTextFont(2);
+    lcd.setTextSize(1);
+    lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+
+    lcd.println("Touch corners as indicated");
+
+    lcd.setTextFont(1);
+    lcd.println();
+
+    lcd.calibrateTouch(calData, TFT_MAGENTA, TFT_BLACK, 15);
+
+    Serial.println(); Serial.println();
+    Serial.println("// Use this calibration code in setup():");
+    Serial.print("  uint16_t calData[5] = ");
+    Serial.print("{ ");
+
+    for (uint8_t i = 0; i < 5; i++)
+    {
+      Serial.print(calData[i]);
+      if (i < 4) Serial.print(", ");
+    }
+
+    Serial.println(" };");
+    Serial.print("  lcd.setTouch(calData);");
+    Serial.println(); Serial.println();
+
+    lcd.fillScreen(TFT_BLACK);
+    
+    lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+    lcd.println("Calibration complete!");
+    lcd.println("Calibration code sent to Serial port.");
+
+    delay(4000);
+  }
+  // Temporary test loop when calibrating touch
+  void loop(void) {
+    uint16_t x = 0, y = 0; // To store the touch coordinates
+
+    // Pressed will be set true is there is a valid touch on the screen
+    bool pressed = lcd.getTouch(&x, &y);
+
+    // Draw a white spot at the detected coordinates
+    if (pressed) {
+      lcd.fillCircle(x, y, 2, TFT_WHITE);
+      Serial.print("x,y = ");
+      Serial.print(x);
+      Serial.print(",");
+      Serial.println(y);
+    }
+  }
+*/
+
+/* Main Loop */
 void loop()
 {
   unsigned long now = millis();
   if (now - last_lv_loop > lv_loop_interval)
   {
-    lv_timer_handler();   //required!!!
+    lv_timer_handler();  //lvgl display driver handler
     last_lv_loop = now;
   }
 
-  //TESTING //////////////////////////////
-  if (auto_cycle_enabled || run_once)
-  {
-    if (state == SYS_ANNEALING)
-    {
-      sys_amps = random(5, 15);
-      // sys_temp = random(100, 250);
-    }
-    else
-    {
-      sys_amps = 0;
-      // sys_temp = random(80, 120);
-    }
-  }
-  else
-  {
-    sys_amps = 0;
-    // sys_temp = random(70,80);
-  }
-  //END TESTING /////////////////////////
+  // delay for a big with splash screen only, then go to main screen and complete loop
+  if (show_splash && now - splash_time < splash_delay) return;
+  if (show_splash) lv_disp_load_scr(ui_MainScreen);   //TODO use _ui_screen_change() ???
+  show_splash = false;
 
   readTemp(now);
-  readAmps();
+  readAmps(); //----------> TODO: implement this
 
   // System state machine
   switch (state)
@@ -417,7 +523,7 @@ void loop()
       if (feeder_mode == FEEDER_LOADING)  //case has been fed by stepper
       {
         if (Serial && DEBUG) Serial.println("Case fed, enter annealing state");
-        //TODO: activate the annealer relay
+        mcp.digitalWrite(MCP_ANNEAL_SSR_PIN, HIGH);  //activate the annealer relay
         anneal_start_time = now;
         state = SYS_ANNEALING;
         Serial.print("FEEDER: at position: ");
@@ -428,16 +534,16 @@ void loop()
       if (now - anneal_start_time > anneal_time)
       {
         if (Serial && DEBUG) Serial.println("End annealing, enter case drop state");
-        //TODO: deactivate the annealer relay
-        //TODO: activate the case drop solenoid relay
+        mcp.digitalWrite(MCP_ANNEAL_SSR_PIN, LOW);  //deactivate the annealer relay
+        mcp.digitalWrite(MCP_DROP_RELAY_PIN, HIGH);  //activate the case drop solenoid relay
         drop_dwell_start_time = now;
         state = SYS_CASE_DROP;
       }
       break;
     case SYS_CASE_DROP:
-      if (now - drop_dwell_start_time > drop_dwell_time)
+      if (now - drop_dwell_start_time > feeder_dwell_time)
       {
-        //TODO: deactivate the case drop solenoid relay
+        mcp.digitalWrite(MCP_DROP_RELAY_PIN, LOW);  //deactivate the case drop solenoid relay
         if (feeder_mode == FEEDER_PAUSED)  //drop dwell ended after feeder reached paused state
         {
           if (Serial && DEBUG) Serial.println("End of cycle, enter PAUSED/MANUAL state");
@@ -500,6 +606,7 @@ void loop()
   checkStepper();   // Process stepper control
   refreshUI(now);   // Refresh UI data
 }
+/**/
 
 /* TODO: document, implement */
 bool coolingNeeded()
@@ -514,7 +621,7 @@ void homeFeeder()
   if (Serial) Serial.println("homeFeeder()");
   feeder_mode = FEEDER_HOMING;
   feeder_homed = FEEDER_NOT_HOMED;
-  stepper.haltAndSetPosition(0);  // TODO: remove this when using magnets 
+  //stepper.haltAndSetPosition(0);  // TODO: remove this when using magnets 
   startStepper();
   state = SYS_HOMING;
 }
@@ -541,23 +648,47 @@ void readAmps()
     Serial.println("TODO: readAmps()");
     todo_readAmps = false;
   }
+  //TESTING SIMULATION //////////////////
+    if (auto_cycle_enabled || run_once)
+    {
+      if (state == SYS_ANNEALING)
+      {
+        sys_amps = random(5, 15);
+      }
+      else
+      {
+        sys_amps = 0;
+      }
+    }
+    else
+    {
+      sys_amps = 0;
+    }
+  //END TESTING /////////////////////////
 }
 
-/*  TODO: Utilize magnets to locate the position. */
+/*  Return true if at pause location dist from home. */
 bool isAtPauseLocation()
 {
   if (!(tic_e)) return true;
-
-  if (stepper.getCurrentPosition() >= PAUSE_POSITION) return true;
-  else return false;
+  if (stepper.getCurrentPosition() >= PAUSE_POSITION) return true;    
+  return false;
 }
 
-/*  TODO: Utilize magnets to locate the position. */
+/*  Drop location located when hall sensor goes HIGH from magnet. 
+    This is also the homing position.
+    Position is offset by 'drop_pos_offset' steps after sensor goes high (tuning).
+    Return true if sensor is HIGH and at position offset.  Otherwise return false.
+*/
 bool isAtDropLocation()
 {
   if (!(tic_e)) return true;
-
-  if (stepper.getCurrentPosition() >= DROP_POSITION) return true;
+  if (mcp.digitalRead(MCP_HALL_SENSOR_PIN)) 
+  {
+    int pos = stepper.getCurrentPosition();
+    while (stepper.getCurrentPosition() - pos < drop_pos_offset);   // <---------- HANG: TODO: fix hang point?  Can it hang?
+    return true;
+  }
   else return false;
 }
 
@@ -585,7 +716,7 @@ void checkStepper()
         case FEEDER_NOT_HOMED:
           if (isAtDropLocation()) 
           {
-            stopStepper(true);
+            stopStepper(true);  //sets stepper position to 0
             if (Serial && DEBUG) 
             { 
               Serial.print("FEEDER: homing at drop position: ");
@@ -593,7 +724,7 @@ void checkStepper()
               Serial.println(".  Open trap door and start drop timer.");
             }
             feeder_dwell_start_time = now;
-            feeder_mode = FEEDER_DWELL;  //little convoluted, reusing some modes during homing. :(
+            feeder_mode = FEEDER_DWELL;  //HACK: convoluted, reusing some modes during homing. :(
           }
           break;
         case FEEDER_HOMING_TO_PAUSE:
@@ -605,17 +736,17 @@ void checkStepper()
               Serial.print("FEEDER: homing at loaded & pause position: "); 
               Serial.println(stepper.getCurrentPosition());
             }
-            //TODO: activate drop relay
+            mcp.digitalWrite(MCP_DROP_RELAY_PIN, HIGH); //activate drop relay
             drop_dwell_start_time = now;
-            feeder_mode = FEEDER_HOMING; //little convoluted, reusing some modes during homing. :(
+            feeder_mode = FEEDER_HOMING; //HACK: convoluted, reusing some modes during homing. :(
             feeder_homed = FEEDER_HOMING_DROP_CASE;
           }
           break;
         case FEEDER_HOMING_DROP_CASE:
-          if (now - drop_dwell_start_time > drop_dwell_time)
+          if (now - drop_dwell_start_time > feeder_dwell_time)
           {
-            if (Serial && DEBUG) Serial.print("FEEDER: end of drop dwell, feeder homed."); 
-            //TODO: deactivate droper solenoid
+            if (Serial && DEBUG) Serial.println("FEEDER: end of drop dwell, feeder homed."); 
+            mcp.digitalWrite(MCP_DROP_RELAY_PIN, LOW);  //deactivate droper solenoid
             feeder_mode = FEEDER_PAUSED;
             feeder_homed = FEEDER_HOMED;
           }
@@ -679,45 +810,43 @@ void checkStepper()
       if (Serial && DEBUG) Serial.println("ERROR: checkStepper(): Unknown steper mode");
       break;
   }
-
-  //TESTING
-    // if (now - last_test_tic > 5000)
-    // {
-    //   if (stepper.getCurrentVelocity() == 0)
-    //   {
-    //     last_test_tic = now;
-    //     unsigned int pos = stepper.getCurrentPosition();
-    //     Serial.print("TIC current position: ");
-    //     Serial.println(pos);
-    //     Serial.print("Stepper Operational State: ");
-    //     Serial.println((unsigned int)stepper.getOperationState());
-    //   }
-    // }
-  //END TESTING
 }
 
 /* Start the stepper motor moving. */
 void startStepper()
 {
   if (!(tic_e)) return;
-
   if (Serial && DEBUG) Serial.println("startStepper()");
-
   if (stepper.getOperationState() != TicOperationState::Normal) stepper.exitSafeStart();
   if (!(stepper.getEnergized())) stepper.energize();
-  stepper.setTargetVelocity(TIC_MAX_SPEED * TIC_PULSE_MULTIPLIER);
-  while (stepper.getCurrentVelocity() == 0);  //Wait for movement         TODO: ----------> HANG point?
+  stepper.setTargetVelocity(motor_speed * TIC_PULSE_MULTIPLIER);
+  long mark = millis();
+  while (stepper.getCurrentVelocity() == 0)
+  {
+    if (millis() - mark >= START_STOP_TIMEOUT)
+    {
+      if (Serial) Serial.println("ERROR: startStepper(): Timeout waiting on stepper to move.");
+      //TODO: set error state
+    }
+  }
 }
 
 /* Stop the stepper motor.  Reset home position if specified. */
 void stopStepper(bool setZero)
 {
   if (!(tic_e)) return;
-
   if (Serial && DEBUG) Serial.print("stopStepper()"); Serial.println(setZero);
-
-  if (setZero) stepper.haltAndSetPosition(0); //resets home position 
-  else stepper.haltAndHold();
+  stepper.setTargetVelocity(0);
+  long mark = millis();
+  while (stepper.getCurrentVelocity() > 0)
+  {
+    if (millis() - mark >= START_STOP_TIMEOUT)
+    {
+      if (Serial) Serial.println("ERROR: stopStepper(): Timeout waiting on stepper to stop.");
+      //TODO: set error state
+    }
+  }
+  if (setZero) stepper.haltAndSetPosition(0);
 }
 
 /* Refresh UI */
@@ -740,6 +869,8 @@ void refreshUI(unsigned long now)
           lv_obj_set_style_bg_color(ui_BtnManual, lv_color_hex(0x0042c3), LV_PART_MAIN | LV_STATE_DEFAULT );
           lv_label_set_text(ui_BtnManualLabel, "Manual");
       }
+          
+      lv_obj_add_state(ui_BtnSettings, LV_STATE_DISABLED);  // disallow settings edit during running states, will clear below on non-running
 
       switch (state)
       {
@@ -750,6 +881,7 @@ void refreshUI(unsigned long now)
           lv_obj_add_flag(ui_BtnReset, LV_OBJ_FLAG_HIDDEN);
           lv_obj_set_style_bg_color(ui_BtnManual, lv_color_hex(0x680185), LV_PART_MAIN | LV_STATE_DEFAULT );
           lv_label_set_text(ui_BtnManualLabel, "Home");
+          lv_obj_clear_state(ui_BtnSettings, LV_STATE_DISABLED);
           break;
         case SYS_HOMING:
           snprintf(buf, sizeof(buf), "%s", "Homing");
@@ -758,10 +890,12 @@ void refreshUI(unsigned long now)
           break;
         case SYS_MANUAL:
           snprintf(buf, sizeof(buf), "%s", "Manual");
+          lv_obj_clear_state(ui_BtnSettings, LV_STATE_DISABLED);
           break;
         case SYS_PAUSED:
           snprintf(buf, sizeof(buf), "%s", "Paused");
           bg_color = lv_color_hex(0x006e00);
+          lv_obj_clear_state(ui_BtnSettings, LV_STATE_DISABLED);
           break;
         case SYS_FEED_CASE:
           snprintf(buf, sizeof(buf), "%s", "Feed Case");
@@ -808,7 +942,7 @@ void refreshUI(unsigned long now)
     }
     snprintf(buf, sizeof(buf), "%03d", sys_amps);
     lv_label_set_text(ui_Amps, buf);
-    snprintf(buf, sizeof(buf), "%03.1f F", sys_temp_F);
+    snprintf(buf, sizeof(buf), "%03.1f", sys_temp_F);
     lv_label_set_text(ui_Temp, buf);
     if (sys_alert_temp)
     {
@@ -821,121 +955,6 @@ void refreshUI(unsigned long now)
     }
   }
 }
-
-/* TODO: document */
-void handlePauseSliderEvent(lv_event_t * e)
-{
-  lv_obj_t * target = lv_event_get_target(e);
-  lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_RELEASED)
-  {
-    int val = (int)lv_slider_get_value(target) * 1000;
-    if (val != pause_time)
-    {
-      pause_time = val;
-      writeStorage();
-    }
-  }
-}
-
-/* TODO: document */
-void handleAnnealSliderEvent(lv_event_t * e)
-{
-  lv_obj_t * target = lv_event_get_target(e);
-  lv_event_code_t code = lv_event_get_code(e);
-  char buf[_UI_TEMPORARY_STRING_BUFFER_SIZE];
-  int val = (int)lv_slider_get_value(target) * 100;
-  float tmp = (float)val / 1000;
-  snprintf(buf, sizeof(buf), "%2.1f sec", tmp);
-  lv_label_set_text(ui_AnnealTime, buf);
-  if (code == LV_EVENT_RELEASED)
-  {
-    anneal_time = val;
-    writeStorage();
-  }
-}
-
-/* TODO: document */
-void handleAutoBtnEvent(lv_event_t * e)
-{
-  // Serial.println("handleAutoBtnEvent()");
-  lv_obj_t * target = lv_event_get_target(e);
-  lv_event_code_t code = lv_event_get_code(e);  
-  if(code == LV_EVENT_RELEASED) {
-    // Serial.println("Button Released");
-    lv_state_t obj_state = lv_obj_get_state(target);
-    if (obj_state & LV_STATE_CHECKED)
-    {
-      // Serial.println("CHECKED");
-      auto_cycle_enabled = true;
-      lv_label_set_text(ui_BtnAutoLabel, "Stop");
-      lv_obj_add_flag(ui_BtnManual, LV_OBJ_FLAG_HIDDEN);
-    }
-    else
-    {
-      // Serial.println("NOT CHECKED");
-      auto_cycle_enabled = false;
-      lv_label_set_text(ui_BtnAutoLabel, "Auto");
-      lv_obj_clear_flag(ui_BtnManual, LV_OBJ_FLAG_HIDDEN);
-    }
-  }
-}
-
-/* TODO: document */
-void handleManualBtnEvent(lv_event_t * e)
-{
-
-  if (state == SYS_NOT_HOMED)  //special case for system not homed
-  {
-    homeFeeder();
-  }
-  else if (!(sys_running))
-  {
-    lv_event_code_t code = lv_event_get_code(e);  
-    if(code == LV_EVENT_RELEASED) {
-      run_once = true;
-      pause_start_time = 0; //trigger immediately
-    }
-  }
-}
-
-/* TODO: document */
-void handleResetBtnEvent(lv_event_t * e)
-{
-  lv_event_code_t code = lv_event_get_code(e);  
-  if(code == LV_EVENT_RELEASED) {
-    cycle_count = 0;
-    //TODO: consider moving this to it's own button
-    if (!(sys_running))
-    {
-      state = SYS_NOT_HOMED;
-      stepper.haltAndHold();
-      stepper.deenergize();
-    }
-  }
-}
-
-/* EEPROM stored preferences */
-typedef struct storeData_t
-{
-  int version;
-  int anneal_time;
-  int pause_time;
-  int feeder_dwell_time;
-  int drop_dwell_time;
-  int motor_speed;
-  int motor_current;
-  float temp_high_threshold;
-  float temp_low_threshold;
-};
-#define STORED_DATA_SIZE sizeof(storeData_t)
-
-typedef union eeprom_buffer_t{
- storeData_t storeData;
- byte bufferData[sizeof(storeData_t)];
-};
-eeprom_buffer_t prefs;
-#define EEPROM_BASE 0
 
 /* TODO: document */
 void readStorage()
@@ -954,7 +973,7 @@ void readStorage()
     anneal_time = prefs.storeData.anneal_time;
     pause_time = prefs.storeData.pause_time;
     feeder_dwell_time = prefs.storeData.feeder_dwell_time;
-    drop_dwell_time = prefs.storeData.drop_dwell_time;
+    drop_pos_offset = prefs.storeData.drop_pos_offset;
     motor_speed = prefs.storeData.motor_speed;
     motor_current = prefs.storeData.motor_current;
     temp_high_threshold = prefs.storeData.temp_high_threshold;
@@ -968,8 +987,8 @@ void readStorage()
       Serial.println(pause_time);
       Serial.print("   feeder_dwell_time: ");
       Serial.println(feeder_dwell_time);
-      Serial.print("   drop_dwell_time: ");
-      Serial.println(drop_dwell_time);
+      Serial.print("   drop_pos_offset: ");
+      Serial.println(drop_pos_offset);
       Serial.print("   motor_speed: ");
       Serial.println(motor_speed);
       Serial.print("   motor_current: ");
@@ -999,7 +1018,7 @@ void writeStorage()
   prefs.storeData.anneal_time = anneal_time;
   prefs.storeData.pause_time = pause_time;
   prefs.storeData.feeder_dwell_time = feeder_dwell_time;
-  prefs.storeData.drop_dwell_time = drop_dwell_time;
+  prefs.storeData.drop_pos_offset = drop_pos_offset;
   prefs.storeData.motor_speed = motor_speed;
   prefs.storeData.motor_current = motor_current;
   prefs.storeData.temp_high_threshold = temp_high_threshold;
@@ -1009,4 +1028,23 @@ void writeStorage()
   }
   EEPROM.end();
   if (Serial && DEBUG) Serial.println("Sys data written to EEPROM stored preferences.");
+  if (Serial && DEBUG)
+  {
+    Serial.print("   anneal_time: ");
+    Serial.println(anneal_time);
+    Serial.print("   pause_time: ");
+    Serial.println(pause_time);
+    Serial.print("   feeder_dwell_time: ");
+    Serial.println(feeder_dwell_time);
+    Serial.print("   drop_pos_offset: ");
+    Serial.println(drop_pos_offset);
+    Serial.print("   motor_speed: ");
+    Serial.println(motor_speed);
+    Serial.print("   motor_current: ");
+    Serial.println(motor_current);
+    Serial.print("   high_temp_threshold: ");
+    Serial.println(temp_high_threshold);
+    Serial.print("   low_temp_threshold: ");
+    Serial.println(temp_low_threshold);
+  }
 }
