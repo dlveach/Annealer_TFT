@@ -32,6 +32,7 @@ Arduino IDE Tools settings for Elecrow 3.5" touch screen:
 TODO:
   - MVP: Temperature sensor cooling mode limit check.
   - MVP: Read amps.
+  - Settings option for temp in Centigrade.
 
 IDEAS:
   - Maybe Count up time in display during anneal
@@ -72,7 +73,6 @@ uint16_t calData[5] = { 557, 3263, 369, 3493, 3  };
 
 static const uint16_t screenWidth  = 240;   //swap dimensions for portrait mode
 static const uint16_t screenHeight = 320;
-//TODO: portrait calibration data
 uint16_t calData[5] = { 321, 3507, 183, 3520, 4 };
 #endif
 
@@ -311,22 +311,6 @@ void setup()
   lv_indev_drv_register( &indev_drv );
   ui_init();        //LVGL UI init
   
-  //Storage init
-  if (Serial && DEBUG) Serial.println( "Storage Init ..." );
-  readStorage();
-
-  // MCP23017 init
-  if (!mcp.begin_I2C(0x27, &Wire)) {
-    Serial.println("ERROR: cannot connect to MCP23017");
-    while (1);
-  }
-  Serial.println("Connected to MCP23017");  
-  mcp.pinMode(MCP_DROP_RELAY_PIN, OUTPUT);
-  mcp.digitalWrite(MCP_DROP_RELAY_PIN, LOW);
-  mcp.pinMode(MCP_ANNEAL_SSR_PIN, OUTPUT);
-  mcp.digitalWrite(MCP_ANNEAL_SSR_PIN, LOW);
-  mcp.pinMode(MCP_HALL_SENSOR_PIN, INPUT_PULLUP);
-
   //TMP102 Temp Sensor init
   if (!(tmp.begin(0x48, Wire)))
   {
@@ -347,11 +331,25 @@ void setup()
   //0:12-bit Temperature(-55C to +128C) 1:13-bit Temperature(-55C to +150C)
   tmp.setExtendedMode(1);
   //set T_HIGH, the upper limit to trigger the alert on
-  tmp.setHighTempF(TEMP_HIGH_THRESHOLD);  // set T_HIGH in F
-  //tmp.setHighTempC(29.4); // set T_HIGH in C
+  // tmp.setHighTempF(TEMP_HIGH_THRESHOLD);  // set T_HIGH in F     TODO: remove, handled in readStorage();
   //set T_LOW, the lower limit to shut turn off the alert
-  tmp.setLowTempF(TEMP_LOW_THRESHOLD);  // set T_LOW in F
-  //tmp.setLowTempC(26.67); // set T_LOW in C
+  // tmp.setLowTempF(TEMP_LOW_THRESHOLD);  // set T_LOW in F     TODO: remove, handled in readStorage();
+
+  //Storage init
+  if (Serial && DEBUG) Serial.println( "Storage Init ..." );
+  readStorage();
+
+  // MCP23017 init
+  if (!mcp.begin_I2C(0x27, &Wire)) {
+    Serial.println("ERROR: cannot connect to MCP23017");
+    while (1);
+  }
+  Serial.println("Connected to MCP23017");  
+  mcp.pinMode(MCP_DROP_RELAY_PIN, OUTPUT);
+  mcp.digitalWrite(MCP_DROP_RELAY_PIN, LOW);
+  mcp.pinMode(MCP_ANNEAL_SSR_PIN, OUTPUT);
+  mcp.digitalWrite(MCP_ANNEAL_SSR_PIN, LOW);
+  mcp.pinMode(MCP_HALL_SENSOR_PIN, INPUT_PULLUP);
 
   //TIC stepper controller init
   byte error;
@@ -471,13 +469,14 @@ void loop()
     last_lv_loop = now;
   }
 
-  // delay for a big with splash screen only, then go to main screen and complete loop
+  // Splash screen only for a time, then go on with main screen and complete loop
   if (show_splash && now - splash_time < splash_delay) return;
   if (show_splash) lv_disp_load_scr(ui_MainScreen);   //TODO use _ui_screen_change() ???
   show_splash = false;
 
   readTemp(now);
   readAmps(); //----------> TODO: implement this
+  //TODO: implement over amps limit check
 
   // System state machine
   switch (state)
@@ -495,27 +494,25 @@ void loop()
       break;
     case SYS_PAUSED:
     case SYS_MANUAL:
-      if (coolingNeeded()) 
+      //check first for over temp.
+      if (state != SYS_COOLING and sys_alert_temp)
       {
         if (Serial && DEBUG) Serial.println("Enter system cooling state");
         state = SYS_COOLING;
       }
-      else
+      else if (auto_cycle_enabled || run_once)
       {
-        if (auto_cycle_enabled || run_once)
+        if (!(sys_running) && now - pause_start_time > pause_time) 
         {
-          if (!(sys_running) && now - pause_start_time > pause_time) 
+          if (feeder_mode == FEEDER_PAUSED && feeder_homed == FEEDER_HOMED)
           {
-            if (feeder_mode == FEEDER_PAUSED && feeder_homed == FEEDER_HOMED)
-            {
-              if (Serial && DEBUG) Serial.println("Enter system running state, start a cycle");
-              startStepper();
-              sys_running = true;
-              state = SYS_FEED_CASE;
-              feeder_mode = FEEDER_DROPPING;
-              if (run_once) run_once = false;
-            }         
-          }
+            if (Serial && DEBUG) Serial.println("Enter system running state, start a cycle");
+            startStepper();
+            sys_running = true;
+            state = SYS_FEED_CASE;
+            feeder_mode = FEEDER_DROPPING;
+            if (run_once) run_once = false;
+          }         
         }
       }
       break;
@@ -581,11 +578,18 @@ void loop()
       }
       break;
     case SYS_COOLING:
-        if (!(coolingNeeded())) 
+        if (!(sys_alert_temp))
         {
           if (Serial && DEBUG) Serial.println("End of cooling, enter PAUSED/MANUAL state");
-          if (auto_cycle_enabled) state = SYS_PAUSED;
-          else state = SYS_MANUAL;
+          if (auto_cycle_enabled) 
+          {
+            state = SYS_PAUSED;
+          }
+          else 
+          {
+            run_once = false;
+            state = SYS_MANUAL;
+          }
         }
       break;
     case SYS_ERROR:
@@ -608,25 +612,17 @@ void loop()
 }
 /**/
 
-/* TODO: document, implement */
-bool coolingNeeded()
-{
-  //TODO: check current temp against cooling limit
-  return false;
-}
-
 /* Start homing the case feeder. */
 void homeFeeder()
 {
   if (Serial) Serial.println("homeFeeder()");
   feeder_mode = FEEDER_HOMING;
   feeder_homed = FEEDER_NOT_HOMED;
-  //stepper.haltAndSetPosition(0);  // TODO: remove this when using magnets 
   startStepper();
   state = SYS_HOMING;
 }
 
-/* TODO: document */
+/* Read system temp sensor, set alert if over threshold. */
 void readTemp(unsigned long now)
 {
   if (now - last_temp_poll > temp_polling_interval)
@@ -692,10 +688,7 @@ bool isAtDropLocation()
   else return false;
 }
 
-/* Manage stepper movement.  
-    TODO: more documentation.
-    Expected to be called from main loop on every cycle.
-*/
+/* Manage stepper movement.  Expected to be called from main loop on every cycle. */
 void checkStepper()
 {
   if (!(tic_e)) return;
@@ -861,7 +854,7 @@ void refreshUI(unsigned long now)
     if (state != last_state)
     {
 
-      if (last_state == SYS_HOMING)  //special cases for system exiting homing, setup buttons for annealing
+      if (last_state == SYS_HOMING)  //special cases for system exiting homing, setup buttons for annealing. 
       {
           lv_obj_clear_flag(ui_BtnAuto, LV_OBJ_FLAG_HIDDEN);
           lv_obj_clear_flag(ui_BtnManual, LV_OBJ_FLAG_HIDDEN);
@@ -871,6 +864,7 @@ void refreshUI(unsigned long now)
       }
           
       lv_obj_add_state(ui_BtnSettings, LV_STATE_DISABLED);  // disallow settings edit during running states, will clear below on non-running
+      lv_obj_set_style_bg_color(ui_Temp, lv_color_hex(0x006e00), LV_PART_MAIN | LV_STATE_DEFAULT );  // default temp label color, will override if in cooling state below
 
       switch (state)
       {
@@ -916,6 +910,7 @@ void refreshUI(unsigned long now)
         case SYS_COOLING:
           snprintf(buf, sizeof(buf), "%s", "Cooling Down");
           bg_color = lv_color_hex(0xdf0000);
+          lv_obj_set_style_bg_color(ui_Temp, lv_color_hex(0xdf0000), LV_PART_MAIN | LV_STATE_DEFAULT );
           break;
         case SYS_ERROR:
           snprintf(buf, sizeof(buf), "%s", "ERROR!");
@@ -944,19 +939,12 @@ void refreshUI(unsigned long now)
     lv_label_set_text(ui_Amps, buf);
     snprintf(buf, sizeof(buf), "%03.1f", sys_temp_F);
     lv_label_set_text(ui_Temp, buf);
-    if (sys_alert_temp)
-    {
-      if (Serial && DEBUG) Serial.println("Temperature sensor is in alert state");
-      lv_obj_set_style_bg_color(ui_Temp, lv_color_hex(0xdf0000), LV_PART_MAIN | LV_STATE_DEFAULT );
-    }
-    else
-    {
-      lv_obj_set_style_bg_color(ui_Temp, lv_color_hex(0x006e00), LV_PART_MAIN | LV_STATE_DEFAULT );
-    }
   }
 }
 
-/* TODO: document */
+/* Read settings from storage.  Update globals as needed.
+  Note: If EEPROM version is out of date, will set everything to defaults and write to storage.
+*/
 void readStorage()
 {
   if (Serial && DEBUG) Serial.println("readStorage()");
@@ -998,6 +986,8 @@ void readStorage()
       Serial.print("   low_temp_threshold: ");
       Serial.println(temp_low_threshold);
     }
+    tmp.setHighTempF(temp_high_threshold);
+    tmp.setLowTempF(temp_low_threshold);
     char buf[_UI_TEMPORARY_STRING_BUFFER_SIZE];
     snprintf(buf, sizeof(buf), "%2.1f sec", (float)anneal_time / (float)1000);
     lv_label_set_text(ui_AnnealTime, buf);
@@ -1009,7 +999,7 @@ void readStorage()
   EEPROM.end();
 }
 
-/* TODO: document */
+/* Write settings to storage. */
 void writeStorage()
 {
   if (Serial && DEBUG) Serial.println("writeStorage()");
@@ -1047,4 +1037,6 @@ void writeStorage()
     Serial.print("   low_temp_threshold: ");
     Serial.println(temp_low_threshold);
   }
+  tmp.setHighTempF(temp_high_threshold);
+  tmp.setLowTempF(temp_low_threshold);
 }

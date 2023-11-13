@@ -90,7 +90,7 @@ void handleResetBtnEvent(lv_event_t * e)
   if(code == LV_EVENT_RELEASED) {
     cycle_count = 0;
     //TODO: consider moving this to it's own button
-    if (!(sys_running))
+    if (!(sys_running) && state != SYS_COOLING)
     {
       state = SYS_NOT_HOMED;
       stepper.haltAndHold();
